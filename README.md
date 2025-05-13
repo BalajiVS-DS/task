@@ -4,27 +4,11 @@ Code uses the spaCy library, which is a powerful tool for understanding the stru
 
 
 Start
-  |
-  V
 Import libraries
-  |
-  V
 Load spaCy model
-  |
-  V
 Define extract_details(text)
-  |
-  V
-  Process text with spaCy
-  |
-  V
-  Extract name, age, school
-  |
-  V
-  Convert to JSON
-  |
-  V
-  Return JSON
-  |
-  V
+Process text with spaCy
+Extract name, age, school
+Convert to JSON
+Return JSON
 End
