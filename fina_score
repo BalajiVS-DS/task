@@ -1,0 +1,835 @@
+import openrouteservice
+import re
+from difflib import get_close_matches
+from difflib import get_close_matches
+from itertools import combinations
+from collections import defaultdict
+import json
+
+
+def score_experience_required(min_exp: int, max_exp: int, candidate_exp: int) -> float:
+    lower_exp = max(0, min_exp - max_exp)
+    higher_exp = min(max_exp * 3, 40)
+    
+    if candidate_exp < lower_exp:
+        return 0.0
+
+    elif lower_exp <= candidate_exp < min_exp:
+        if min_exp > 0 and min_exp != lower_exp:
+            return (1 - (min_exp - candidate_exp) / (min_exp - lower_exp)) * 100
+        else:
+            return 100.0
+
+    elif min_exp <= candidate_exp <= max_exp:
+        return 100.0
+
+    elif max_exp < candidate_exp <= higher_exp:
+        return ((higher_exp - candidate_exp) / (higher_exp - max_exp)) * 100
+
+    else:
+        return 0.0
+    
+def score_job_location(required_location: str, candidate_location: str) -> float:
+    api_key = "5b3ce3597851110001cf6248821fdc925f564c51941f63ab156278bc"
+    client = openrouteservice.Client(key=api_key)
+
+    try:
+        # Convert location names to coordinates
+        coord1 = client.pelias_search(text=required_location)["features"][0]["geometry"]["coordinates"]
+        coord2 = client.pelias_search(text=candidate_location)["features"][0]["geometry"]["coordinates"]
+
+        # Calculate distance matrix
+        response = client.distance_matrix(
+            locations=[coord1, coord2],
+            profile='driving-car',
+            metrics=['distance'],
+            units='km'
+        )
+
+        distance = response['distances'][0][1]  # distance in km
+
+        # Convert distance to score
+        if distance <= 50:
+            return 100.0
+        elif distance >= 2000:
+            return 0.0
+        else:
+            return max(0.0, 100 * (1 - (distance / 2000)))
+
+    except Exception as e:
+        print(f"Error fetching location score: {e}")
+        return 0.0
+   
+def score_notice_period(required_range: str, candidate_notice_days: int) -> float:
+    
+    min_required, max_required = map(int, re.findall(r'\d+', required_range))
+    
+    if min_required <= candidate_notice_days <= max_required:
+        return 100.0
+    
+    if candidate_notice_days > 90:
+        return 0.0
+
+    # Linear decay between max_required and 90 days
+    return max(0.0, 100 - ((candidate_notice_days - max_required) / (90 - max_required)) * 100)
+
+
+
+tech_roles = {
+    "backend_roles": {
+        "Backend Developer", "API Developer", "Database Developer", "DevOps Engineer",
+         "Cloud Backend Engineer", "Platform Engineer",
+        "Infrastructure Engineer", "Systems Engineer", "Software Engineer - Backend",
+        "Microservices Developer", "Integration Engineer", "Middleware Engineer",
+        "Data Engineer", "Server-side Developer", "Security Engineer - Backend",
+        "Performance Engineer", "Application Support Engineer", "Backend Architect",
+        "Scalability Engineer", "Java Backend Developer", "Python Backend Developer",
+        "Node.js Backend Developer", "Golang Backend Developer", "Ruby Backend Developer",
+        "C#/.NET Backend Developer", "PHP Backend Developer", "REST API Developer",
+        "GraphQL Developer", "Kubernetes Engineer", "NodeJS Developer", "CI/CD Engineer"
+    },
+    "frontend_roles": {
+        "Frontend Developer", "UI/UX Designer", "Web Designer", "JavaScript Developer",
+        "React Developer", "Angular Developer", "Vue.js Developer", "HTML/CSS Developer",
+        "Mobile Frontend Developer", "Accessibility Engineer", "Frontend Architect",
+        "Interaction Designer", "Motion Designer", "Web Animator", "SASS/LESS Developer",
+
+    },
+    "fullstack_roles": {
+        "Full Stack Developer", "MEAN Stack Developer", "MERN Stack Developer",
+        "LAMP Stack Developer", "Software Engineer - Full Stack", "Web Application Developer",
+        "Mobile Full Stack Developer", "Frontend-Backend Integrator", "Cross-Platform Developer",
+        "Technical Lead - Full Stack","React","Angular"
+    },
+    "data_roles": {
+        "Data Scientist", "Data Analyst", "Data Engineer", "Data Architect",
+        "Data Modeler", "Data Storyteller", "Business Intelligence Analyst",
+        "Data Visualization Specialist", "Big Data Engineer", "Quantitative Analyst",
+        "Statistician", "Data Governance Analyst", "Data Quality Analyst",
+        "Data Mining Specialist", "Predictive Modeler", "ETL Developer",
+        "Data Warehouse Engineer", "NLP Engineer", "Computer Vision Engineer",
+        "Deep Learning Engineer"
+    },
+    "ai_ml_roles": {
+        "AI Engineer", "Machine Learning Engineer", "Deep Learning Engineer",
+        "Natural Language Processing (NLP) Engineer", "Computer Vision Engineer",
+        "AI Research Scientist", "AI Trainer", "Generative AI Designer", "Prompt Engineer",
+        "AI Operations Specialist", "AI Architect", "AI Product Manager",
+        "AI Ethics Specialist", "Reinforcement Learning Engineer", "Speech Recognition Engineer",
+        "Recommendation Systems Engineer", "AI Solutions Consultant", "AI Data Analyst",
+        "AI Software Developer", "AI QA Engineer"
+    },
+    "cybersecurity_roles": {
+        "Security Analyst", "Penetration Tester", "Network Security Engineer",
+        "Application Security Engineer", "Security Architect", "Cryptographer",
+        "Digital Forensics Analyst", "Threat Intelligence Analyst", "CISO", "ISSO",
+        "Incident Response Analyst", "GRC Analyst", "IAM Analyst", "CTI Analyst", "DPO",
+        "DRM", "ICS Security Analyst", "SCADA Security Analyst", "IT Auditor", "SOC Analyst"
+    },
+    "cloud_roles": {
+        "Cloud Engineer", "Cloud Architect", "Cloud Consultant", "Cloud Security Engineer",
+        "Cloud DevOps Engineer", "Cloud Systems Administrator", "Cloud Network Engineer",
+        "Cloud Support Engineer", "Cloud Solutions Architect", "Cloud Operations Manager",
+        "Cloud Compliance Manager", "Cloud Automation Engineer", "Cloud Product Manager",
+        "Cloud Sales Engineer"
+    },
+    "devops_roles": {
+        "DevOps Engineer", "Site Reliability Engineer", "IaC Engineer",
+        "Release Manager", "Automation Engineer", "Build and Release Engineer",
+        "Cloud DevOps Engineer", "Platform Engineer", "Monitoring Engineer"
+    },
+    "qa_roles": {
+        "QA Engineer", "Test Automation Engineer", "Manual Tester", "QA",  "Performance Tester",
+        "Security Tester", "Mobile QA Engineer", "QA Analyst", "Test Lead", "SDET",
+        "Usability Tester"
+    },
+    "product_roles": {
+        "Product Manager", "Product Owner", "Technical Product Manager", "Product Analyst",
+        "Product Designer", "UX Researcher", "Growth Product Manager", "Product Marketing Manager",
+        "CPO", "Product Strategist"
+    },
+    "project_management_roles": {
+        "Project Manager", "Scrum Master", "Agile Coach", "Product Owner", "Technical Project Manager",
+        "Program Manager", "Delivery Manager", "Release Manager", "Project Coordinator",
+        "Portfolio Manager"
+    },
+    "network_roles": {
+        "Network Engineer", "Network Administrator", "Network Architect", "Network Analyst",
+        "Wireless Network Engineer", "VoIP Engineer", "Network Security Engineer",
+        "NOC Engineer", "LAN/WAN Engineer", "Telecom Engineer"
+    },
+    "database_roles": {
+        "Database Administrator (DBA)", "Database Developer", "Data Architect", "SQL Developer",
+        "NoSQL Developer", "Database Analyst", "Data Warehouse Developer", "ETL Developer",
+        "Big Data Engineer", "Database Reliability Engineer"
+    },
+    "support_roles": {
+        "Technical Support Engineer", "Help Desk Technician", "IT Support Specialist",
+        "Application Support Analyst", "Desktop Support Engineer", "Customer Support Engineer",
+        "Field Service Technician", "IT Technician", "Support Analyst", "Service Desk Analyst"
+    }
+}
+
+business_roles = {
+    "marketing_roles": {
+        "Marketing Manager", "Digital Marketing Specialist", "SEO Specialist",
+        "Content Marketer", "Social Media Manager", "Brand Manager",
+        "Product Marketing Manager", "Growth Marketer", "Email Marketing Specialist",
+        "Marketing Analyst", "Performance Marketing Manager", "SEM Specialist",
+        "Influencer Marketing Manager", "Marketing Coordinator", "Affiliate Marketing Manager"
+    },
+    "sales_roles": {
+        "Sales Executive", "Sales Manager", "Account Executive", "Business Development Manager",
+        "Inside Sales Representative", "Territory Sales Manager", "Regional Sales Manager",
+        "Sales Analyst", "Channel Sales Manager", "Key Account Manager",
+        "Enterprise Sales Executive", "Pre-Sales Consultant", "Client Relationship Manager"
+    },
+    "finance_roles": {
+        "Financial Analyst", "Accountant", "Finance Manager", "Auditor",
+        "Controller", "Budget Analyst", "Tax Consultant", "Treasury Analyst",
+        "Investment Analyst", "Compliance Officer", "CFO", "Finance Business Partner",
+        "Cost Accountant", "Payroll Specialist", "Risk Analyst"
+    },
+    "hr_roles": {
+        "HR Manager", "HR Business Partner", "Recruiter", "Talent Acquisition Specialist",
+        "Compensation and Benefits Analyst", "HR Generalist", "HR Specialist",
+        "Employee Relations Manager", "Organizational Development Consultant",
+        "Learning and Development Manager", "People Operations Specialist", "HR Analyst"
+    },
+    "operations_roles": {
+        "Operations Manager", "Operations Analyst", "Process Improvement Specialist",
+        "Supply Chain Manager", "Logistics Coordinator", "Inventory Manager",
+        "Vendor Manager", "Procurement Analyst", "Business Operations Associate",
+        "Facilities Manager", "Service Delivery Manager"
+    },
+    "customer_success_roles": {
+        "Customer Success Manager", "Client Services Manager", "Customer Support Specialist",
+        "Account Manager", "Customer Experience Manager", "Customer Onboarding Specialist",
+        "Retention Specialist", "Customer Advocacy Manager", "Customer Engagement Manager"
+    },
+    "legal_roles": {
+        "Legal Counsel", "Compliance Officer", "Contract Manager", "Corporate Lawyer",
+        "Legal Analyst", "Intellectual Property Specialist", "Regulatory Affairs Specialist",
+        "Legal Assistant", "Paralegal"
+    },
+    "admin_roles": {
+        "Administrative Assistant", "Executive Assistant", "Office Manager",
+        "Receptionist", "Clerical Assistant", "Data Entry Clerk", "Administrative Coordinator",
+        "Personal Assistant", "Office Administrator"
+    },
+    "strategy_roles": {
+        "Business Analyst", "Strategy Consultant", "Corporate Strategist",
+        "Management Consultant", "Competitive Intelligence Analyst", "Strategy Manager",
+        "Business Planner", "Business Intelligence Analyst"
+    },
+    "training_roles": {
+        "Corporate Trainer", "Training Manager", "Learning and Development Specialist",
+        "Instructional Designer", "Training Coordinator", "Leadership Coach",
+        "E-learning Specialist", "Facilitator"
+    }
+}
+
+
+medical_roles = {
+    "clinical_roles": {
+        "Physician", "General Practitioner", "Primary Care Physician", "Hospitalist", "Surgeon", "Doctor",
+        "Cardiologist", "Neurologist", "Oncologist", "Orthopedic Surgeon", "Urologist",
+        "Dermatologist", "Gastroenterologist", "Endocrinologist", "Pulmonologist",
+        "Nephrologist", "Infectious Disease Specialist", "Pediatrician", "Geriatrician",
+        "ENT Specialist", "Radiologist", "Anesthesiologist", "Critical Care Physician"
+    },
+    "nursing_roles": {
+        "Registered Nurse", "Licensed Practical Nurse", "Nurse Practitioner", "Critical Care Nurse", "Nurse",
+        "Surgical Nurse", "Pediatric Nurse", "Geriatric Nurse", "Oncology Nurse", "Neonatal Nurse",
+        "Psychiatric Nurse", "Nurse Midwife", "Nurse Anesthetist", "Cardiac Nurse", "Emergency Room Nurse"
+    },
+    "allied_health_roles": {
+        "Physiotherapist", "Occupational Therapist", "Speech-Language Pathologist", "Radiologic Technologist",
+        "Respiratory Therapist", "Anesthesia Technician", "Medical Laboratory Technician",
+        "Phlebotomist", "Optometrist", "Dietitian", "Nutritionist", "Orthoptist", "Audiologist",
+        "Recreational Therapist", "Chiropractor", "Sonographer", "Perfusionist"
+    },
+    "pharmacy_roles": {
+        "Pharmacist", "Clinical Pharmacist", "Pharmacy Technician", "Pharmaceutical Researcher",
+        "Pharmacovigilance Associate", "Regulatory Affairs Specialist", "Formulation Scientist",
+        "Pharmaceutical Sales Representative", "Medicinal Chemist"
+    },
+    "administrative_roles": {
+        "Medical Biller", "Medical Coder", "Health Information Technician", "Medical Receptionist",
+        "Medical Transcriptionist", "Healthcare Administrator", "Practice Manager", "Medical Office Assistant",
+        "Health Services Manager", "Patient Services Coordinator", "Hospital Administrator"
+    },
+    "public_health_roles": {
+        "Public Health Officer", "Epidemiologist", "Biostatistician", "Health Educator",
+        "Community Health Worker", "Environmental Health Specialist", "Public Health Analyst",
+        "Health Policy Analyst", "Global Health Specialist", "Public Health Nurse", "Disease Surveillance Officer"
+    },
+    "mental_health_roles": {
+        "Clinical Psychologist", "Counselor", "Therapist", "Psychiatrist", "Psychiatric Nurse",
+        "Substance Abuse Counselor", "Mental Health Social Worker", "Marriage and Family Therapist",
+        "Behavioral Health Specialist", "Addiction Specialist", "Rehabilitation Counselor"
+    }
+}
+
+educational_roles = {
+    "school_education_roles": {
+        "Primary School Teacher", "Elementary School Teacher", "Middle School Teacher", " Teacher",
+        "High School Teacher", "Subject Teacher", "Special Education Teacher",
+        "Substitute Teacher", "Classroom Assistant", "Homeroom Teacher"
+    },
+    "higher_education_roles": {
+        "Lecturer", "Assistant Professor", "Associate Professor", "Professor",
+        "Adjunct Faculty", "Research Scholar", "Postdoctoral Fellow",
+        "Dean", "Academic Advisor"
+    },
+    "education_administration_roles": {
+        "Principal", "Vice Principal", "School Administrator", "Head of Department",
+        "Academic Coordinator", "Registrar", "Dean of Students", "Director of Admissions",
+        "Education Policy Analyst"
+    },
+    "vocational_training_roles": {
+        "Vocational Instructor", "Technical Trainer", "Industrial Training Instructor",
+        "ITI Trainer", "Apprenticeship Coordinator", "Trade School Instructor",
+        "Skill Development Trainer", "Workshop Facilitator"
+    },
+    "online_education_roles": {
+        "Online Tutor", "eLearning Specialist", "Instructional Designer",
+        "MOOC Facilitator", "Content Developer - Education", "Virtual Classroom Instructor",
+        "LMS Administrator", "Remote Teaching Assistant"
+    },
+    "curriculum_development_roles": {
+        "Curriculum Developer", "Instructional Coordinator", "Syllabus Designer",
+        "Education Content Specialist", "Assessment Developer", "Standards Alignment Consultant"
+    },
+    "student_support_roles": {
+        "School Counselor", "Career Counselor", "Academic Advisor",
+        "Student Success Coach", "Guidance Counselor", "Mentor",
+        "Remedial Tutor", "Behavioral Interventionist"
+    },
+    "special_education_roles": {
+        "Special Educator", "Learning Disabilities Specialist", "Autism Support Specialist",
+        "IEP Coordinator", "Speech-Language Pathologist (SLP)", "Occupational Therapist - Schools"
+    },
+    "educational_technology_roles": {
+        "EdTech Specialist", "Technology Integration Coach", "Digital Learning Consultant",
+        "Educational App Developer", "LMS Specialist", "Education Technology Trainer"
+    },
+    "library_roles": {
+        "School Librarian", "Academic Librarian", "Library Assistant",
+        "Library Media Specialist", "Archivist", "Information Resource Specialist"
+    }
+}
+
+
+tech_domains = {k: k.replace("_roles", "") for k in tech_roles}
+role_to_category = {}
+category_to_dict_name = {}
+
+# Add tech roles
+for category, roles in tech_roles.items():
+    domain = category.replace("_roles", "")
+    category_to_dict_name[domain] = "tech"
+    for role in roles:
+        role_to_category[role] = domain
+
+for category, roles in business_roles.items():
+    domain = category.replace("_roles", "")
+    category_to_dict_name[domain] = "business"
+    for role in roles:
+        role_to_category[role] = domain
+
+
+for category, roles in medical_roles.items():
+    domain = category.replace("_roles", "")
+    category_to_dict_name[domain] = "medical"
+    for role in roles:
+        role_to_category[role] = domain
+
+for category, roles in educational_roles.items():
+    domain = category.replace("_roles", "")
+    category_to_dict_name[domain] = "educational"
+    for role in roles:
+        role_to_category[role] = domain
+
+
+DOMAIN_SIMILARITY_MATRIX = {
+    "backend": {"backend": 1.0, "devops": 0.6, "cloud": 0.5, "data": 0.4, "ai_ml": 0.3},
+    "frontend": {"frontend": 1.0, "fullstack": 0.7, "product": 0.4},
+    "fullstack": {"fullstack": 1.0, "frontend": 0.7, "backend": 0.7},
+    "data": {"data": 1.0, "ai_ml": 0.7, "cloud": 0.4, "backend": 0.4, "database": 0.6},
+    "ai_ml": {"ai_ml": 1.0, "data": 0.7, "cloud": 0.3},
+    "cybersecurity": {"cybersecurity": 1.0, "network": 0.6, "cloud": 0.5},
+    "cloud": {"cloud": 1.0, "backend": 0.5, "devops": 0.8, "ai_ml": 0.3},
+    "devops": {"devops": 1.0, "cloud": 0.8, "backend": 0.6},
+    "qa": {"qa": 1.0},
+    "product": {"product": 1.0, "project_management": 0.6, "frontend": 0.4},
+    "project_management": {"project_management": 1.0, "product": 0.6},
+    "network": {"network": 1.0, "cybersecurity": 0.6},
+    "database": {"database": 1.0, "data": 0.6},
+    "support": {"support": 1.0},
+    "management": {"management": 1.0},
+    "finance": {"finance": 1.0},
+    "marketing": {"marketing": 1.0},
+    "sales": {"sales": 1.0},
+    "hr": {"hr": 1.0},
+    "legal": {"legal": 1.0},
+    "consulting": {"consulting": 1.0, "management": 0.5, "finance": 0.4},
+
+
+    #BUSINESS
+
+"marketing": { "marketing": 1.0, "sales": 0.7, "product": 0.6, "strategy": 0.5, "customer_success": 0.6, "operations": 0.4, "training": 0.3 },
+"sales": { "sales": 1.0, "marketing": 0.7, "customer_success": 0.7, "product": 0.5, "strategy": 0.4, "finance": 0.3, "operations": 0.4 },
+"finance": { "finance": 1.0, "strategy": 0.6, "operations": 0.5, "legal": 0.4, "hr": 0.3, "admin": 0.2 },
+"hr": { "hr": 1.0, "training": 0.7, "admin": 0.5, "operations": 0.4, "strategy": 0.3 },
+"operations": { "operations": 1.0, "finance": 0.5, "hr": 0.4, "sales": 0.4, "admin": 0.4, "customer_success": 0.3 },
+"customer_success": { "customer_success": 1.0, "sales": 0.7, "marketing": 0.6, "operations": 0.3 },
+"legal": { "legal": 1.0, "finance": 0.4, "operations": 0.3, "admin": 0.3 }, "admin": { "admin": 1.0, "hr": 0.5, "legal": 0.3, "operations": 0.4 },
+"strategy": { "strategy": 1.0, "finance": 0.6, "marketing": 0.5, "sales": 0.4, "product": 0.6, "hr": 0.3 },
+"training": { "training": 1.0, "hr": 0.7, "admin": 0.4, "operations": 0.3 },
+"product": { "product": 1.0, "marketing": 0.6, "sales": 0.5, "strategy": 0.6 },
+
+#MEDICAL
+"clinical": { "clinical": 1.0, "nursing": 0.8, "allied_health": 0.7, "pharmacy": 0.6, "administrative": 0.4, "public_health": 0.5, "mental_health": 0.6 },
+"nursing": { "clinical": 0.8, "nursing": 1.0, "allied_health": 0.7, "pharmacy": 0.5, "administrative": 0.4, "public_health": 0.6, "mental_health": 0.7 },
+"allied_health": { "clinical": 0.7, "nursing": 0.7, "allied_health": 1.0, "pharmacy": 0.5, "administrative": 0.5, "public_health": 0.6, "mental_health": 0.6 },
+ "pharmacy": { "clinical": 0.6, "nursing": 0.5, "allied_health": 0.5, "pharmacy": 1.0, "administrative": 0.5, "public_health": 0.5, "mental_health": 0.4 },
+ "administrative": { "clinical": 0.4, "nursing": 0.4, "allied_health": 0.5, "pharmacy": 0.5, "administrative": 1.0, "public_health": 0.6, "mental_health": 0.4 },
+"public_health": { "clinical": 0.5, "nursing": 0.6, "allied_health": 0.6, "pharmacy": 0.5, "administrative": 0.6, "public_health": 1.0, "mental_health": 0.6 },
+ "mental_health": { "clinical": 0.6, "nursing": 0.7, "allied_health": 0.6, "pharmacy": 0.4, "administrative": 0.4, "public_health": 0.6, "mental_health": 1.0 },
+
+#EDUCATIONAL
+
+"school_education": { "school_education": 1.0, "higher_education": 0.6, "student_support": 0.7, "special_education": 0.7, "curriculum_development": 0.5, "education_administration": 0.6 },
+"higher_education": { "school_education": 0.6, "higher_education": 1.0, "education_administration": 0.7, "curriculum_development": 0.6, "online_education": 0.6, "student_support": 0.5 },
+"education_administration": { "education_administration": 1.0, "school_education": 0.6, "higher_education": 0.7, "curriculum_development": 0.5, "student_support": 0.4 },
+"vocational_training": { "vocational_training": 1.0, "technical_training": 0.8, "online_education": 0.6, "curriculum_development": 0.5 },
+"online_education": { "online_education": 1.0, "higher_education": 0.6, "vocational_training": 0.6, "educational_technology": 0.8, "curriculum_development": 0.5 },
+"curriculum_development": { "curriculum_development": 1.0, "school_education": 0.5, "higher_education": 0.6, "online_education": 0.5, "education_administration": 0.5 },
+"student_support": { "student_support": 1.0, "school_education": 0.7, "higher_education": 0.5, "special_education": 0.6, "education_administration": 0.4 },
+"special_education": { "special_education": 1.0, "student_support": 0.6, "school_education": 0.7 },
+"educational_technology": { "educational_technology": 1.0, "online_education": 0.8, "higher_education": 0.5, "curriculum_development": 0.5 },
+"library": { "library": 1.0, "school_education": 0.4, "higher_education": 0.5, "education_administration": 0.4 }
+
+
+}
+
+
+
+domain_similarity = {
+    (d1, d2): sim for d1, m in DOMAIN_SIMILARITY_MATRIX.items() for d2, sim in m.items()
+}
+
+# Basic normalization: lowercase and remove all non-alphanumeric characters
+def normalize_text(text: str) -> str:
+    return re.sub(r"[^\w]", "", text.lower())
+
+# Build a set of all known roles
+all_roles = set(role_to_category.keys())
+
+# Mapping from normalized role strings to their original format
+norm_to_role = {normalize_text(r): r for r in all_roles}
+
+# Fuzzy match a given role to the closest known role using normalized text
+def normalize_role(role: str) -> str:
+    norm = normalize_text(role)
+    match = get_close_matches(norm, norm_to_role.keys(), n=1, cutoff=0.6)
+    return norm_to_role[match[0]] if match else role
+
+# Extract keywords from role by splitting normalized string (removes special characters)
+def extract_keywords(role: str) -> set:
+    return set(normalize_text(role).split())
+
+# Compute similarity between two job roles
+def score_job_role(role1: str, role2: str) -> float:
+    # Normalize both roles to the closest known job titles
+    role1 = normalize_role(role1)
+    role2 = normalize_role(role2)
+
+    # Exact match
+    if role1 == role2:
+        return 1.0
+
+    # Get categories for each role (e.g., "AI/ML", "Data", "DevOps")
+    cat1 = role_to_category.get(role1)
+    cat2 = role_to_category.get(role2)
+
+    # If either role is not categorized, return 0 (no similarity)
+    if not cat1 or not cat2:
+        return 0.0
+
+    # Get domain dictionary group names (e.g., "ai_ml_roles", "data_roles")
+    dict1 = category_to_dict_name.get(cat1)
+    dict2 = category_to_dict_name.get(cat2)
+
+    # If roles are in different domains (e.g., Data vs DevOps), return 0
+    if dict1 != dict2:
+        return 0.0
+
+    # If roles belong to the same category (e.g., both "Data"), compute keyword overlap
+    if cat1 == cat2:
+        kw1, kw2 = extract_keywords(role1), extract_keywords(role2)
+        overlap = len(kw1 & kw2)                         # common keywords
+        total = max(len(kw1), len(kw2))                  # normalization factor
+        return round(0.5 + 0.3 * (overlap / total if total else 0), 2)
+
+    # If roles belong to different categories in the same domain, use domain similarity matrix
+    return domain_similarity.get((cat1, cat2), domain_similarity.get((cat2, cat1), 0.0))
+
+
+###########################
+
+import re
+import json
+
+
+equivalent_degrees = {
+    "B.Tech": ["Bachelor of Technology", "B.E.", "Bachelor of Engineering"],
+    "M.Tech": ["Master of Technology", "M.E.", "Master of Engineering"],
+    "B.Sc.": ["Bachelor of Science"],
+    "M.Sc.": ["Master of Science"],
+    "B.Com.": ["Bachelor of Commerce"],
+    "M.Com.": ["Master of Commerce"],
+    "B.A.": ["Bachelor of Arts"],
+    "M.A.": ["Master of Arts"],
+    "BBA": ["Bachelor of Business Administration"],
+    "MBA": ["Master of Business Administration", "PGDM"],
+    "BCA": ["Bachelor of Computer Applications"],
+    "MCA": ["Master of Computer Applications"],
+    "LL.B.": ["Bachelor of Laws"],
+    "LL.M.": ["Master of Laws"],
+    "MBBS": ["Bachelor of Medicine, Bachelor of Surgery"],
+    "MD": ["Doctor of Medicine"],
+    "BDS": ["Bachelor of Dental Surgery"],
+    "B.Pharm": ["Bachelor of Pharmacy"],
+    "M.Pharm": ["Master of Pharmacy"],
+    "B.Arch": ["Bachelor of Architecture"],
+    "M.Arch": ["Master of Architecture"],
+    "B.Ed.": ["Bachelor of Education"],
+    "M.Ed.": ["Master of Education"],
+    "Ph.D.": ["Doctor of Philosophy"]
+}
+
+# Consolidate all degree forms and normalize them for easier lookup.
+# This list should include both the original forms (e.g., "B.E.")
+# and normalized forms (e.g., "be", "bachelor of engineering").
+all_degrees = set()
+for base, equivalents in equivalent_degrees.items():
+    all_degrees.add(base.lower().replace('.', '')) # Add normalized base (e.g., btech, be)
+    all_degrees.add(base) # Add original base (e.g., B.Tech, B.E.)
+    for eq in equivalents:
+        all_degrees.add(eq.lower().replace('.', '')) # Add normalized equivalents (e.g., bachelor of technology)
+        all_degrees.add(eq) # Add original equivalents (e.g., Bachelor of Technology)
+
+# Convert to a list for sorting, but it's now a set for efficiency
+all_degrees_list = sorted(list(all_degrees), key=len, reverse=True)
+
+
+specialization_similarity_groups = [
+    ({"Computer Science", "Information Technology", "Software Engineering", "Computer Applications"}, 90),
+    ({"Artificial Intelligence", "Machine Learning", "Data Science"}, 90),
+    ({"Electrical Engineering", "Electronics Engineering", "Electronics and Communication Engineering"}, 80),
+    ({"Mechanical Engineering", "Automobile Engineering", "Mechatronics"}, 85),
+    ({"Civil Engineering", "Architecture"}, 75),
+    ({"Biotechnology", "Genetic Engineering", "Bioinformatics","Biomedical", "Industrial Biotechnology"}, 85),
+    ({"Finance", "Accounting", "Commerce","Business"}, 85),
+    ({"Marketing", "Sales"}, 80),
+    ({"Physics", "Applied Physics"}, 90),
+    ({"Mathematics", "Statistics"}, 85),
+    ({"Law", "Legal Studies"}, 90),
+    ({"Political Science", "Public Administration"}, 75),
+    ({"History", "Geography","Archaeology"}, 70),
+    ({"Philosophy", "Ethics"}, 85),
+    ({"Education", "Educational Technology"}, 80),
+    ({"Environmental Science", "Ecology"}, 85),
+    ({"Chemical Engineering", "Process Engineering", "Petrochemical Engineering", "Biochemical Engineering"}, 85),
+    ({"Aerospace Engineering", "Aerodynamics", "Avionics", "Propulsion Systems"}, 85),
+    ({"Textile Engineering", "Apparel Production", "Textile Chemistry"}, 85),
+    ({"Agricultural Engineering", "Food Processing", "Irrigation Systems"}, 85),
+    ({"Mining Engineering", "Petroleum Engineering", "Reservoir Engineering", "Drilling Engineering"}, 85),
+    ({"Marine Engineering", "Ship Design", "Marine Propulsion"}, 85),
+    ({"Pharmaceutical Engineering", "Drug Development", "Manufacturing Processes", "Regulatory Affairs"}, 85),
+    ({"Nuclear Engineering", "Reactor Design", "Radiation Protection", "Nuclear Fuel Cycle"}, 85),
+]
+
+
+import re
+import json
+
+# --- Global Data (unchanged from previous valid responses) ---
+equivalent_degrees = {
+    "B.Tech": ["Bachelor of Technology", "B.E.", "Bachelor of Engineering"],
+    "M.Tech": ["Master of Technology", "M.E.", "Master of Engineering"],
+    "B.Sc.": ["Bachelor of Science"],
+    "M.Sc.": ["Master of Science"],
+    "B.Com.": ["Bachelor of Commerce"],
+    "M.Com.": ["Master of Commerce"],
+    "B.A.": ["Bachelor of Arts"],
+    "M.A.": ["Master of Arts"],
+    "BBA": ["Bachelor of Business Administration"],
+    "MBA": ["Master of Business Administration", "PGDM"],
+    "BCA": ["Bachelor of Computer Applications"],
+    "MCA": ["Master of Computer Applications"],
+    "LL.B.": ["Bachelor of Laws"],
+    "LL.M.": ["Master of Laws"],
+    "MBBS": ["Bachelor of Medicine, Bachelor of Surgery"],
+    "MD": ["Doctor of Medicine"],
+    "BDS": ["Bachelor of Dental Surgery"],
+    "B.Pharm": ["Bachelor of Pharmacy"],
+    "M.Pharm": ["Master of Pharmacy"],
+    "B.Arch": ["Bachelor of Architecture"],
+    "M.Arch": ["Master of Architecture"],
+    "B.Ed.": ["Bachelor of Education"],
+    "M.Ed.": ["Master of Education"],
+    "Ph.D.": ["Doctor of Philosophy"]
+}
+
+# Consolidate all degree forms and normalize them for easier lookup.
+all_degrees = set()
+for base, equivalents in equivalent_degrees.items():
+    all_degrees.add(base) # Add original base (e.g., B.Tech, B.E.)
+    all_degrees.add(base.replace('.', '')) # Add base without dot (e.g., BTech, BE)
+    all_degrees.add(base.lower()) # Add lowercase base (e.g., b.tech, b.e.)
+    all_degrees.add(base.lower().replace('.', '')) # Add lowercase base without dot (e.g., btech, be)
+
+    for eq in equivalents:
+        all_degrees.add(eq) # Add original equivalents (e.g., Bachelor of Technology)
+        all_degrees.add(eq.replace('.', ''))
+        all_degrees.add(eq.lower()) # Add lowercase equivalents
+        all_degrees.add(eq.lower().replace('.', '')) # Add lowercase equivalents without dot
+
+# Add common misspellings/abbreviations directly
+all_degrees.add("bech")
+all_degrees.add("b.ech")
+
+# Convert to a list and sort by length for more accurate longest-match first
+all_degrees_list = sorted(list(all_degrees), key=len, reverse=True)
+
+
+specialization_similarity_groups = [
+    ({"Computer Science", "Information Technology", "Software Engineering", "Computer Applications"}, 90),
+    ({"Artificial Intelligence", "Machine Learning", "Data Science"}, 90),
+    ({"Electrical Engineering", "Electronics Engineering", "Electronics and Communication Engineering"}, 80),
+    ({"Mechanical Engineering", "Automobile Engineering", "Mechatronics"}, 85),
+    ({"Civil Engineering", "Architecture"}, 75),
+    ({"Biotechnology", "Genetic Engineering", "Bioinformatics","Biomedical", "Industrial Biotechnology"}, 85),
+    ({"Finance", "Accounting", "Commerce","Business"}, 85),
+    ({"Marketing", "Sales"}, 80),
+    ({"Physics", "Applied Physics"}, 90),
+    ({"Mathematics", "Statistics"}, 85),
+    ({"Law", "Legal Studies"}, 90),
+    ({"Political Science", "Public Administration"}, 75),
+    ({"History", "Geography","Archaeology"}, 70),
+    ({"Philosophy", "Ethics"}, 85),
+    ({"Education", "Educational Technology"}, 80),
+    ({"Environmental Science", "Ecology"}, 85),
+    ({"Chemical Engineering", "Process Engineering", "Petrochemical Engineering", "Biochemical Engineering"}, 85),
+    ({"Aerospace Engineering", "Aerodynamics", "Avionics", "Propulsion Systems"}, 85),
+    ({"Textile Engineering", "Apparel Production", "Textile Chemistry"}, 85),
+    ({"Agricultural Engineering", "Food Processing", "Irrigation Systems"}, 85),
+    ({"Mining Engineering", "Petroleum Engineering", "Reservoir Engineering", "Drilling Engineering"}, 85),
+    ({"Marine Engineering", "Ship Design", "Marine Propulsion"}, 85),
+    ({"Pharmaceutical Engineering", "Drug Development", "Manufacturing Processes", "Regulatory Affairs"}, 85),
+    ({"Nuclear Engineering", "Reactor Design", "Radiation Protection", "Nuclear Fuel Cycle"}, 85),
+]
+
+
+def extract_degree_and_specialization(text):
+    original_text = text.strip()
+    text_lower_normalized = original_text.lower().replace('.', '') # For matching
+
+    found_degree = None
+    found_specialization = None
+    
+    # 1. Find the Degree
+    degree_match_end_index = -1
+    for degree_alias in all_degrees_list:
+        normalized_alias = degree_alias.lower().replace('.', '')
+        # Use regex to find the degree with word boundaries
+        match = re.search(r'\b' + re.escape(normalized_alias) + r'\b', text_lower_normalized)
+        if match:
+            found_degree = degree_alias # Keep original alias for comparison in score function
+            degree_match_end_index = match.end() # Store where the degree match ends
+            break # Found the best (longest) match
+
+    # If 'Bech' was found, map it to 'BE' for scoring consistency
+    if found_degree and found_degree.lower().replace('.', '') == 'bech':
+        found_degree = 'BE' # Map 'bech' to 'BE'
+
+    # 2. Find the Specialization
+    if found_degree:
+        # Get the part of the string after the found degree
+        remaining_text = text_lower_normalized[degree_match_end_index:].strip()
+
+        # Look for common connectors and then the specialization
+        # e.g., "in computer science", "of mechanical engineering"
+        spec_match = re.search(r'(?:in|of|from|with|major in|specializing in|engineering)\s*([a-z\s&./-]+)', remaining_text)
+        
+        if spec_match:
+            found_specialization = spec_match.group(1).strip()
+            # Clean up common suffixes like "engineering" if it's not the core
+            if found_specialization.endswith(" engineering") and len(found_specialization.split()) > 1:
+                found_specialization = found_specialization.replace(" engineering", "").strip()
+        else:
+            # If no "in/of" pattern, try to infer specialization from remaining words
+            # This is a heuristic, assuming the rest of the relevant text is the specialization
+            words = [word for word in re.findall(r'\b[a-z]+\b', remaining_text) if len(word) > 2]
+            if words:
+                found_specialization = ' '.join(words).strip()
+                # A common case: "BE Computer Science". If "Computer Science" was the remaining text, this captures it.
+                # However, for "Bech in Automobile Engineering", the 'in' is important.
+                # The `spec_match` above should catch "in Automobile Engineering".
+
+    return found_degree, found_specialization
+
+
+def get_degree_score(required_degrees, candidate_degree, equivalent_degrees):
+    # Normalize required degrees to ensure consistent comparison
+    normalized_required = [deg.strip().lower().replace('.', '') for deg in required_degrees]
+
+    # Normalize candidate degree for comparison
+    candidate_degree_norm = candidate_degree.lower().replace('.', '') if candidate_degree else ''
+
+    if any(req in {"ug", "undergraduate", "any degree"} for req in normalized_required):
+        return 100
+
+    for req_degree in normalized_required:
+        # Check for direct match
+        if candidate_degree_norm == req_degree:
+            return 100
+
+        # Check against equivalent degrees (both base and their listed equivalents)
+        # Iterate through the original equivalent_degrees for mapping
+        for base_key, equivalents_list in equivalent_degrees.items():
+            base_key_norm = base_key.lower().replace('.', '')
+            equivalent_norms = [eq.lower().replace('.', '') for eq in equivalents_list]
+
+            # If the required degree is a form of the base or its equivalents
+            if req_degree == base_key_norm or req_degree in equivalent_norms:
+                # And if the candidate degree is also a form of the same base or its equivalents
+                if candidate_degree_norm == base_key_norm or candidate_degree_norm in equivalent_norms:
+                    return 100
+    return 0
+
+def get_specialization_score_grouped(required_specializations, candidate_specialization, similarity_groups):
+    candidate_specialization_lower = candidate_specialization.strip().lower() if candidate_specialization else ''
+    best_score = 0
+
+    for req_spec in required_specializations:
+        req_spec_lower = req_spec.strip().lower()
+        if candidate_specialization_lower == req_spec_lower:
+            return 100
+
+        # Check for group-based similarity
+        for group, score in similarity_groups:
+            group_lower = {s.lower() for s in group}
+            if candidate_specialization_lower in group_lower and req_spec_lower in group_lower:
+                best_score = max(best_score, score)
+
+    return best_score
+
+def get_total_education_score(requirement_data, candidate_data, equivalent_degrees, similarity_groups):
+    candidate_text = candidate_data.get("educational_qualification", "")
+    candidate_degree, candidate_specialization = extract_degree_and_specialization(candidate_text)
+
+    # Return the structured dictionary even if extraction fails, but with 0 scores.
+    if not candidate_degree or not candidate_specialization:
+        return {
+            "degree_score": 0,
+            "specialization_score": 0,
+            "total_education_score": 0,
+            "note": "Could not extract degree/specialization"
+        }
+
+    # Ensure degree_required is a list, handling comma-separated strings if they ever occur
+    required_degrees_list = requirement_data["educational_qualification_required"]["degree_required"]
+    if isinstance(required_degrees_list, str):
+        required_degrees_list = [d.strip() for d in required_degrees_list.split(',')]
+
+    degree_score = get_degree_score(
+        required_degrees_list,
+        candidate_degree,
+        equivalent_degrees
+    )
+
+    specialization_score = get_specialization_score_grouped(
+        requirement_data["educational_qualification_required"]["specialization_branch_list"],
+        candidate_specialization,
+        similarity_groups
+    )
+
+    total_score = int(0.5 * degree_score + 0.5 * specialization_score)
+
+    return total_score
+
+##############################
+def evaluate_minimum_requirement(requirement_data: dict, candidate_data: dict):
+    experience_score = score_experience_required(
+        int(requirement_data["experience_required"]["minimum_years"]),
+        int(requirement_data["experience_required"]["maximum_years"]),
+        int(re.search(r'\d+', candidate_data["experience"]).group())
+    )
+    
+    job_location_score = score_job_location(
+        "Kolkata",  # Or extract dynamically from requirement_data
+        candidate_data["job_location"]
+    )
+
+    job_role_score = score_job_role(
+        "required_job_role",  # Replace with actual required role if stored
+        candidate_data["job_role"]
+    )
+
+    notice_period_score = score_notice_period(
+        requirement_data["notice_period"],
+        int(re.search(r'\d+', candidate_data["notice_period"]).group())
+    )
+ 
+    education_score = get_total_education_score(data_requirements, data_candidate, equivalent_degrees, specialization_similarity_groups)
+    
+    threshold=40
+    evaluation = {
+        "experience": {"score": experience_score, "pass": experience_score >= threshold},
+        "job_location": {"score": job_location_score, "pass": job_location_score >= threshold},
+        "job_role": {"score": job_role_score, "pass": job_role_score >= threshold},
+        "notice_period": {"score": notice_period_score, "pass": notice_period_score >= threshold},
+        "education": {"score": education_score, "pass": education_score >= threshold}
+    }
+    print(evaluation)
+
+    minimum_score=((experience_score+job_location_score+job_role_score+notice_period_score+education_score)/500) * 100
+    return minimum_score
+
+
+
+######################################333
+requirement_data = {"experience_required":{"minimum_years":"2","maximum_years":"3"},"notice_period":"10-15 days","educational_qualification":{"degree_required":"B.E.,B.Tech, BCA","specialization_branch_list":["Electronics Communication","Computer Science"]}}
+candidate_data = {"educational_qualification":"B.E in Computer Science","experience":"1 year","job_location":"Kolkata","job_role":"Junior Patrolling Officer","notice_period":"30 days"}
+data_requirements = {
+    "educational_qualification_required": {
+        "degree_required": [deg.strip() for deg in requirement_data["educational_qualification"]["degree_required"].split(',')],
+        "specialization_branch_list": requirement_data["educational_qualification"]["specialization_branch_list"]
+    }
+}
+
+data_candidate = {
+    "educational_qualification": candidate_data["educational_qualification"]
+}
+
+min_score=evaluate_minimum_requirement(requirement_data, candidate_data)
+print(min_score)
+
+
+
+
+
+   
+
+   
+
+   
+   
+   
+   
+
+
