@@ -678,7 +678,7 @@ def extract_degree_and_specialization(text):
                 found_specialization = ' '.join(words).strip()
                 # A common case: "BE Computer Science". If "Computer Science" was the remaining text, this captures it.
                 # However, for "Bech in Automobile Engineering", the 'in' is important.
-                # The `spec_match` above should catch "in Automobile Engineering".
+                # The spec_match above should catch "in Automobile Engineering".
 
     return found_degree, found_specialization
 
@@ -763,20 +763,23 @@ def get_total_education_score(requirement_data, candidate_data, equivalent_degre
     return total_score
 
 ##############################
+import re
+
 def evaluate_minimum_requirement(requirement_data: dict, candidate_data: dict):
+    # Extract individual scores
     experience_score = score_experience_required(
         int(requirement_data["experience_required"]["minimum_years"]),
         int(requirement_data["experience_required"]["maximum_years"]),
         int(re.search(r'\d+', candidate_data["experience"]).group())
     )
-    
+
     job_location_score = score_job_location(
-        "Kolkata",  # Or extract dynamically from requirement_data
+        requirement_data.get("job_location", "Kolkata"),
         candidate_data["job_location"]
     )
 
     job_role_score = score_job_role(
-        "required_job_role",  # Replace with actual required role if stored
+        requirement_data.get("job_role", "required_job_role"),
         candidate_data["job_role"]
     )
 
@@ -784,27 +787,71 @@ def evaluate_minimum_requirement(requirement_data: dict, candidate_data: dict):
         requirement_data["notice_period"],
         int(re.search(r'\d+', candidate_data["notice_period"]).group())
     )
- 
-    education_score = get_total_education_score(data_requirements, data_candidate, equivalent_degrees, specialization_similarity_groups)
-    
-    threshold=40
+
+    education_score = get_total_education_score(
+        data_requirements,
+        data_candidate,
+        equivalent_degrees,
+        specialization_similarity_groups
+    )
+
+    # Define threshold
+    threshold = 50
+
+    # Prepare evaluation dictionary
     evaluation = {
-        "experience": {"score": experience_score, "pass": experience_score >= threshold},
-        "job_location": {"score": job_location_score, "pass": job_location_score >= threshold},
-        "job_role": {"score": job_role_score, "pass": job_role_score >= threshold},
-        "notice_period": {"score": notice_period_score, "pass": notice_period_score >= threshold},
-        "education": {"score": education_score, "pass": education_score >= threshold}
+        "experience": {
+            "score": round(experience_score, 2),
+            "is_Qualified": experience_score >= threshold
+        },
+        "job_location": {
+            "score": round(job_location_score, 2),
+            "is_Qualified": job_location_score >= threshold
+        },
+        "job_role": {
+            "score": round(job_role_score, 2),
+            "is_Qualified": job_role_score >= threshold
+        },
+        "notice_period": {
+            "score": round(notice_period_score, 2),
+            "is_Qualified": notice_period_score >= threshold
+        },
+        "education": {
+            "score": round(education_score, 2),
+            "is_Qualified": education_score >= threshold
+        }
     }
-    print(evaluation)
 
-    minimum_score=((experience_score+job_location_score+job_role_score+notice_period_score+education_score)/500) * 100
-    return minimum_score
+    # Calculate overall minimum requirement score
+    minimum_score = ((experience_score + job_location_score + job_role_score +
+                      notice_period_score + education_score) / 500) * 100
+    minimum_score = round(minimum_score, 2)
 
+    # Determine final status and reason
+    status = "Selected"
+    reason = ""
+    for field, result in evaluation.items():
+        if not result["is_Qualified"]:
+            status = "Rejected"
+            reason = f"{field.replace('_', ' ').title()} Match not met"
+            break
 
+    # Final result
+    result = {
+        "candidate_screening_result": {
+            "summary": "Profile evaluated against key job requirements.",
+            "evaluation": evaluation,
+            "minimum_requirement_score": minimum_score,
+            "status": status,
+            "reason": reason if status == "Rejected" else None
+        }
+    }
 
-######################################333
+    return result
+
+#INPUT AND OUTPUT
 requirement_data = {"experience_required":{"minimum_years":"2","maximum_years":"3"},"notice_period":"10-15 days","educational_qualification":{"degree_required":"B.E.,B.Tech, BCA","specialization_branch_list":["Electronics Communication","Computer Science"]}}
-candidate_data = {"educational_qualification":"B.E in Computer Science","experience":"1 year","job_location":"Kolkata","job_role":"Junior Patrolling Officer","notice_period":"30 days"}
+candidate_data = {"educational_qualification":"B.E in Computer Science","experience":"1 year","job_location":"Kolkotaa","job_role":"Junior Patrolling Officer","notice_period":"30 days"}
 data_requirements = {
     "educational_qualification_required": {
         "degree_required": [deg.strip() for deg in requirement_data["educational_qualification"]["degree_required"].split(',')],
@@ -816,20 +863,5 @@ data_candidate = {
     "educational_qualification": candidate_data["educational_qualification"]
 }
 
-min_score=evaluate_minimum_requirement(requirement_data, candidate_data)
-print(min_score)
-
-
-
-
-
-   
-
-   
-
-   
-   
-   
-   
-
-
+res=evaluate_minimum_requirement(requirement_data, candidate_data)
+print(res)
